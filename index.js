@@ -13,7 +13,7 @@ const produit = require("./Routes/produitRoute");
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 app.use(bodyParser.json());
 require("dotenv").config();
 app.get("/", (req, res) => {

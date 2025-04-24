@@ -9,169 +9,141 @@ const fs = require('fs');
 require("dotenv").config();
 const sgMail = require('@sendgrid/mail');
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-  // Configuration de multer pour l'upload de photos
-  const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-      const uploadDir = './uploads/profiles';
-      // Créer le répertoire s'il n'existe pas
-      if (!fs.existsSync(uploadDir)) {
-        fs.mkdirSync(uploadDir, { recursive: true });
-      }
-      cb(null, uploadDir);
-    },
-    filename: function (req, file, cb) {
-      cb(null, `${Date.now()}-${file.originalname}`);
-    }
-  });
+  // Function to save base64 image to a file
+const saveBase64Image = (base64String, filename) => {
+  // Create uploads directory if it doesn't exist
+  const uploadDir = './uploads/profiles';
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
 
-  const fileFilter = (req, file, cb) => {
-    // Accepter uniquement les fichiers jpg et png
-    if (file.mimetype === 'image/jpeg' || file.mimetype === 'image/png') {
-      cb(null, true);
-    } else {
-      cb(new Error('Format de fichier non supporté. Veuillez télécharger une image JPG ou PNG.'), false);
-    }
-  };
+  // Extract actual base64 data from the data URL
+  const matches = base64String.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
+  
+  if (!matches || matches.length !== 3) {
+    throw new Error('Invalid base64 string');
+  }
+  
+  const imageBuffer = Buffer.from(matches[2], 'base64');
+  const fileExtension = matches[1].split('/')[1] === 'jpeg' ? 'jpg' : matches[1].split('/')[1];
+  const uniqueFilename = `${Date.now()}-${filename || 'profile'}.${fileExtension}`;
+  const filePath = path.join(uploadDir, uniqueFilename);
+  
+  fs.writeFileSync(filePath, imageBuffer);
+  return filePath;
+};
 
-  const upload = multer({ 
-    storage: storage,
-    fileFilter: fileFilter,
-    limits: { fileSize: 5 * 1024 * 1024 } // limite à 5MB
-  });
+// Fonction pour générer un matricule unique pour les fournisseurs
+const generateMatricule = () => {
+  // Format: WFyyyy-MM-xxxxx (WF pour WeeFarm, année-mois, puis 5 chiffres aléatoires)
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const randomDigits = Math.floor(10000 + Math.random() * 90000); // 5 chiffres aléatoires
+  
+  return `WF${year}-${month}-${randomDigits}`;
+};
 
-  // Middleware pour gérer l'upload de photo
-  exports.uploadProfilePhoto = upload.single('photo');
+// Fonction pour envoyer un email avec le matricule utilisant SendGrid
+const sendMatriculeEmail = async (email, matricule, nom, prenom) => {
+  try {
+    const msg = {
+      to: email,
+      from: {
+        email: process.env.EMAIL_FROM || 'support@weefarm.com',
+        name: process.env.EMAIL_FROM_NAME || 'WeeFarm Support'
+      },
+      subject: 'Votre matricule WeeFarm',
+      html: `
+        <h1>Bienvenue sur WeeFarm, ${prenom} ${nom}!</h1>
+        <p>Votre compte fournisseur a été créé avec succès.</p>
+        <p>Voici votre matricule fournisseur unique: <strong>${matricule}</strong></p>
+        <p>Veuillez le conserver précieusement, vous en aurez besoin pour vous connecter à votre compte fournisseur.</p>
+        <p>L'équipe WeeFarm</p>
+      `
+    };
 
-  // Fonction pour générer un matricule unique pour les fournisseurs
-  const generateMatricule = () => {
-    // Format: WFyyyy-MM-xxxxx (WF pour WeeFarm, année-mois, puis 5 chiffres aléatoires)
-    const date = new Date();
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const randomDigits = Math.floor(10000 + Math.random() * 90000); // 5 chiffres aléatoires
+    await sgMail.send(msg);
+    return true;
+  } catch (error) {
+    console.error('Erreur lors de l\'envoi de l\'email:', error);
+    return false;
+  }
+};
+
+exports.register = async (req, res) => {
+  try {
+    // Extract form data
+    const { 
+      email, 
+      password, 
+      Nom, 
+      Prenom, 
+      Dateinsc, 
+      Adresse, 
+      numtel,
+      dateNaissance,
+      genre,
+      typeuser,
+      emailPro,
+      Entreprise,
+      photo, // This will be the base64 string
+      photoName // Not needed if storing base64 directly
+    } = req.body;
     
-    return `WF${year}-${month}-${randomDigits}`;
-  };
-
-  // Fonction pour envoyer un email avec le matricule utilisant SendGrid
-  const sendMatriculeEmail = async (email, matricule, nom, prenom) => {
-    try {
-      const msg = {
-        to: email,
-        from: {
-          email: process.env.EMAIL_FROM || 'support@weefarm.com',
-          name: process.env.EMAIL_FROM_NAME || 'WeeFarm Support'
-        },
-        subject: 'Votre matricule WeeFarm',
-        html: `
-          <h1>Bienvenue sur WeeFarm, ${prenom} ${nom}!</h1>
-          <p>Votre compte fournisseur a été créé avec succès.</p>
-          <p>Voici votre matricule fournisseur unique: <strong>${matricule}</strong></p>
-          <p>Veuillez le conserver précieusement, vous en aurez besoin pour vous connecter à votre compte fournisseur.</p>
-          <p>L'équipe WeeFarm</p>
-        `
-      };
-
-      await sgMail.send(msg);
-      return true;
-    } catch (error) {
-      console.error('Erreur lors de l\'envoi de l\'email:', error);
-      return false;
+    // Check if email already exists
+    const [existingUsers] = await db.execute("SELECT * FROM client WHERE email = ?", [email]);
+    if (existingUsers.length > 0) {
+      return res.status(400).json({ message: "Cet email est déjà utilisé" });
     }
-  };
 
-  exports.register = async (req, res) => {
-    try {
-      // Extraire les données du formulaire
-      const { 
-        email, 
-        password, 
-        Nom, 
-        Prenom, 
-        Dateinsc, 
-        Adresse, 
-        numtel,
-        dateNaissance,
-        genre,
-        typeuser,
-        emailPro,
-        Entreprise 
-      } = req.body;
-      
-      // Vérifier si l'email existe déjà
-      const [existingUsers] = await db.execute("SELECT * FROM client WHERE email = ?", [email]);
-      if (existingUsers.length > 0) {
-        return res.status(400).json({ message: "Cet email est déjà utilisé" });
+    if (typeuser === "fournisseur" && emailPro) {
+      const [existingProEmails] = await db.execute("SELECT * FROM fournisseur WHERE emailPro = ?", [emailPro]);
+      if (existingProEmails.length > 0) {
+        return res.status(400).json({ message: "Cet email professionnel est déjà utilisé" });
       }
-  
-      if (typeuser === "fournisseur" && emailPro) {
-        const [existingProEmails] = await db.execute("SELECT * FROM fournisseur WHERE emailPro = ?", [emailPro]);
-        if (existingProEmails.length > 0) {
-          return res.status(400).json({ message: "Cet email professionnel est déjà utilisé" });
-        }
-      }
-  
-      // Hacher le mot de passe
-      const hashedPassword = await bcrypt.hash(password, 10);
-  
-      // Chemin de la photo si elle a été téléchargée
-      let photoPath = null;
-      if (req.file) {
-        photoPath = req.file.path;
-      }
-  
-      if (typeuser === "client") {
-        // Insérer un nouveau client
-        await db.execute(
-          "INSERT INTO client (email, password, Nom, Prenom, Dateinsc, Adresse, numtel, dateNaissance, genre, photo, typeuser) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          [email, hashedPassword, Nom, Prenom, Dateinsc || null, Adresse, numtel, dateNaissance || null, genre, photoPath, typeuser]
-        );
-  
-        return res.status(201).json({ message: "Client enregistré avec succès" });
-      } 
-      else if (typeuser === "fournisseur") {
-        // Générer un matricule unique pour le fournisseur
-        const matricule = req.body.matricule || generateMatricule();
-  
-        // Log all parameters that will be inserted for debugging
-        console.log("Fournisseur insert parameters:", {
-          email, 
-          emailPro: emailPro || null, 
-          password: "HASHED", 
-          Nom, 
-          Prenom, 
-          Dateinsc: Dateinsc || null, 
-          Adresse, 
-          Entreprise: Entreprise || null, 
-          numtel, 
-          dateNaissance: dateNaissance || null, 
-          genre, 
-          matricule, 
-          photoPath, 
-          typeuser
-        });
-  
-        // Insérer un nouveau fournisseur (ensure all parameters have fallback values)
-        await db.execute(
-          "INSERT INTO fournisseur (email, emailPro, password, Nom, Prenom, Dateinsc, Adresse, Entreprise, numtel, dateNaissance, genre, matricule, photo, typeuser) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-          [email, emailPro || null, hashedPassword, Nom, Prenom, Dateinsc || null, Adresse, Entreprise || null, numtel, dateNaissance || null, genre, matricule, photoPath, typeuser]
-        );
-  
-        // Envoyer un email avec le matricule en utilisant SendGrid
-        const emailSent = await sendMatriculeEmail(email, matricule, Nom, Prenom);
-  
-        return res.status(201).json({ 
-          message: "Fournisseur enregistré avec succès. Un email avec votre matricule a été envoyé."
-        });
-      }
-      else {
-        return res.status(400).json({ message: "Type d'utilisateur non valide" });
-      }
-    } catch (error) {
-      console.error("Error in register function:", error);
-      res.status(500).json({ message: error.message });
     }
-  };
+
+    // Hash password
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // No need to save the photo to a file, use the base64 string directly
+    const photoData = photo; // This will be the base64 string
+
+    if (typeuser === "client") {
+      // Insert a new client with the base64 photo directly
+      await db.execute(
+        "INSERT INTO client (email, password, Nom, Prenom, Dateinsc, Adresse, numtel, dateNaissance, genre, photo, typeuser) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [email, hashedPassword, Nom, Prenom, Dateinsc || null, Adresse, numtel, dateNaissance || null, genre, photoData, typeuser]
+      );
+
+      return res.status(201).json({ message: "Client enregistré avec succès" });
+    } 
+    else if (typeuser === "fournisseur") {
+      // Generate unique supplier ID
+      const matricule = req.body.matricule || generateMatricule();
+
+      // Insert a new supplier with the base64 photo directly
+      await db.execute(
+        "INSERT INTO fournisseur (email, emailPro, password, Nom, Prenom, Dateinsc, Adresse, Entreprise, numtel, dateNaissance, genre, matricule, photo, typeuser) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [email, emailPro || null, hashedPassword, Nom, Prenom, Dateinsc || null, Adresse, Entreprise || null, numtel, dateNaissance || null, genre, matricule, photoData, typeuser]
+      );
+
+      // Send email with the matricule using SendGrid
+      const emailSent = await sendMatriculeEmail(email, matricule, Nom, Prenom);
+
+      return res.status(201).json({ 
+        message: "Fournisseur enregistré avec succès. Un email avec votre matricule a été envoyé."
+      });
+    }
+    else {
+      return res.status(400).json({ message: "Type d'utilisateur non valide" });
+    }
+  } catch (error) {
+    console.error("Error in register function:", error);
+    res.status(500).json({ message: error.message });
+  }
+};
 
   exports.login = async (req, res) => {
     const { email, password } = req.body;
@@ -237,6 +209,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
           Prenom: user.Prenom,
           Adresse: user.Adresse,
           numtel: user.numtel,
+          photo: user.photo,
           typeuser
         }
       });
@@ -257,13 +230,14 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
       res.status(400).json({ message: "Invalid token" });
     }
   };
-  exports.getAllClients = (req, res) => {
-    db.query('SELECT * FROM client', (err, results) => {
-      if (err) {
-        return res.status(500).json({ message: "Error retrievingclients", error: err });
-      }
+  exports.getAllClients = async (req, res) => {
+    try {
+      const [results] = await db.query('SELECT * FROM client');
       res.status(200).json(results);
-    });
+    } catch (err) {
+      console.error('Error retrieving clients:', err);
+      res.status(500).json({ message: "Error retrieving clients", error: err.message });
+    }
   };
 
   // Get a single client by ID
@@ -296,18 +270,94 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
   };
 
   // Update a client
-  exports.updateClient = (req, res) => {
+  exports.updateClient = async (req, res) => {
     const { id } = req.params;
-    const { name, email, phone } = req.body;
-    db.query('UPDATE client SET name = ?, email = ?, phone = ? WHERE id = ? ', [name, email, phone, id], (err, result) => {
-      if (err) {
-        return res.status(500).json({
-          message: "Error updating client",
-          error: err
-        });
+    const {
+      Nom,
+      Prenom,
+      email,
+      numtel,
+      Adresse,
+      dateNaissance,
+      genre,
+      photo,
+      typeuser,
+      password,
+    } = req.body;
+  
+    try {
+      // Determine the table based on typeuser
+      let table;
+      switch (typeuser) {
+        case 'client':
+          table = 'client';
+          break;
+        case 'fournisseur':
+          table = 'fournisseur';
+          break;
+        case 'admin':
+          table = 'admin';
+          break;
+        default:
+          return res.status(400).json({ message: "Invalid user type" });
       }
-      res.status(200).json({ message: "Client updated" });
-    });
+  
+      // Check if the user exists in the specified table
+      const [existingUser] = await db.execute(`SELECT * FROM ${table} WHERE id = ?`, [id]);
+      if (existingUser.length === 0) {
+        return res.status(404).json({ message: `${typeuser} not found` });
+      }
+  
+      // If a password is provided, hash it; otherwise, use the existing password
+      let hashedPassword = existingUser[0].password; // Default to existing password
+      if (password) {
+        hashedPassword = await bcrypt.hash(password, 10);
+      }
+  
+      // Construct the SQL query to update the user
+      const query = `
+        UPDATE ${table} 
+        SET 
+          Nom = ?, 
+          Prenom = ?, 
+          email = ?, 
+          numtel = ?, 
+          Adresse = ?, 
+          dateNaissance = ?, 
+          genre = ?, 
+          photo = ?, 
+          typeuser = ?,
+          password = ?
+        WHERE id = ?
+      `;
+  
+      // Execute the query
+      const [result] = await db.execute(query, [
+        Nom,
+        Prenom,
+        email,
+        numtel,
+        Adresse,
+        dateNaissance || null,
+        genre,
+        photo,
+        typeuser,
+        hashedPassword,
+        id,
+      ]);
+  
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: `${typeuser} not found` });
+      }
+  
+      res.status(200).json({ message: `${typeuser} updated successfully` });
+    } catch (err) {
+      console.error("Error updating user:", err);
+      res.status(500).json({
+        message: "Error updating user",
+        error: err.message,
+      });
+    }
   };
 
   // Delete a client

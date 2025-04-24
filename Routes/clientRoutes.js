@@ -7,8 +7,8 @@ router.get("/clients", clientController.getAllClients);
 router.get("/clients/:id", clientController.getClientById);
 router.put("/clients/:id", clientController.updateClient);
 router.delete("/clients/:id", clientController.deleteClient);
-
-router.post("/register",clientController.uploadProfilePhoto, clientController.register);
+2
+router.post("/register", clientController.register);
 router.post("/login", clientController.login);
 // Password reset routes
 router.post("/forgot-password", clientController.forgotPassword);
