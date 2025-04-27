@@ -10,6 +10,7 @@ const categorie = require("./Routes/categorieRoute");
 const modepai = require("./Routes/modepaiRoute");
 const paiement = require("./Routes/paimentRoute");
 const produit = require("./Routes/produitRoute");
+const comment = require("./Routes/commentRoute");
 
 const app = express();
 app.use(cors());
@@ -28,6 +29,7 @@ app.use("/api/", categorie);
 app.use("/api/", modepai);
 app.use("/api/", paiement);
 app.use("/api/", produit);
+app.use("/api/", comment);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
