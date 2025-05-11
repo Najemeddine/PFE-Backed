@@ -4,51 +4,85 @@ const jwt = require("jsonwebtoken");
 require("dotenv").config();
 
 // Get all clients
-exports.getAllClients = (req, res) => {
-  db.query('SELECT * FROM client', (err, results) => {
-    if (err) {
-      return res.status(500).json({ message: "Error retrieving clients", error: err });
-    }
+exports.getAllClients = async (req, res) => {
+  try {
+    const [results] = await db.query('SELECT * FROM client');
     res.status(200).json(results);
-  });
+  } catch (err) {
+    console.error('Error retrieving clients:', err);
+    res.status(500).json({ message: "Error retrieving clients", error: err.message });
+  }
 };
 
 // Delete a client
-exports.deleteClient = (req, res) => {
+exports.deleteClient = async (req, res) => {
   const { id } = req.params;
-  db.query('DELETE FROM client WHERE id = ?', [id], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: "Error deleting client", error: err });
-    }
+  try {
+    const [result] = await db.query('DELETE FROM client WHERE id = ?', [id]);
     if (result.affectedRows === 0) {
       return res.status(404).json({ message: "Client not found" });
     }
     res.status(200).json({ message: "Client deleted successfully" });
-  });
+  } catch (err) {
+    console.error('Error deleting client:', err);
+    res.status(500).json({ message: "Error deleting client", error: err.message });
+  }
 };
 
 // Get admin statistics
 exports.getAdminStatistics = async (req, res) => {
   try {
+    // Total clients and suppliers
     const [clients] = await db.query('SELECT COUNT(*) as total FROM client');
     const [suppliers] = await db.query('SELECT COUNT(*) as total FROM fournisseur');
-    const [products] = await db.query('SELECT * FROM produit');
 
-    // Static data for orders (since orders are static in frontend)
-    const totalOrders = 350; // Placeholder
-    const totalSales = 1500000; // Placeholder in DT
-    const dailyOrders = 15; // Placeholder
-    const weeklyOrders = 90; // Placeholder
-    const monthlyOrders = 350; // Placeholder
+    // Total orders and total sales
+    const [orders] = await db.query('SELECT COUNT(*) as total, SUM(total) as totalSales FROM commande');
+    const totalOrders = orders[0].total;
+    const totalSales = orders[0].totalSales || 0; // Handle case where no orders exist
+
+    // Orders by period (daily, weekly, monthly)
+    const [dailyOrders] = await db.query(
+      "SELECT COUNT(*) as total FROM commande WHERE DATE(date_creation) = CURDATE()"
+    );
+    const [weeklyOrders] = await db.query(
+      "SELECT COUNT(*) as total FROM commande WHERE date_creation >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)"
+    );
+    const [monthlyOrders] = await db.query(
+      "SELECT COUNT(*) as total FROM commande WHERE date_creation >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)"
+    );
+
+    // Top 5 products by quantity ordered
+    const [topProductsRaw] = await db.query(`
+      SELECT p.Nom, SUM(cp.quantite) as totalQuantity
+      FROM commande_produits cp
+      JOIN produit p ON cp.produit_id = p.id
+      GROUP BY p.id, p.Nom
+      ORDER BY totalQuantity DESC
+      LIMIT 5
+    `);
+    const topProducts = topProductsRaw.map(product => ({
+      name: product.Nom,
+      orders: product.totalQuantity,
+    }));
+
+    // Order trends for the chart (same as daily, weekly, monthly)
+    const orderTrends = [
+      { name: "Daily", value: dailyOrders[0].total },
+      { name: "Weekly", value: weeklyOrders[0].total },
+      { name: "Monthly", value: monthlyOrders[0].total },
+    ];
 
     const stats = {
       totalClients: clients[0].total,
       totalSuppliers: suppliers[0].total,
       totalOrders,
       totalSales,
-      dailyOrders,
-      weeklyOrders,
-      monthlyOrders,
+      dailyOrders: dailyOrders[0].total,
+      weeklyOrders: weeklyOrders[0].total,
+      monthlyOrders: monthlyOrders[0].total,
+      orderTrends,
+      topProducts,
     };
 
     res.status(200).json(stats);
@@ -58,48 +92,51 @@ exports.getAdminStatistics = async (req, res) => {
   }
 };
 
-// Existing admin controller functions (unchanged)
-exports.getClientById = (req, res) => {
+// Get admin by ID
+exports.getClientById = async (req, res) => {
   const { id } = req.params;
-  db.query('SELECT * FROM admin WHERE id = ?', [id], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: "Error retrieving client", error: err });
-    }
+  try {
+    const [result] = await db.query('SELECT * FROM admin WHERE id = ?', [id]);
     if (result.length === 0) {
-      return res.status(404).json({ message: "Client not found" });
+      return res.status(404).json({ message: "Admin not found" });
     }
     res.status(200).json(result[0]);
-  });
+  } catch (err) {
+    console.error('Error retrieving admin:', err);
+    res.status(500).json({ message: "Error retrieving admin", error: err.message });
+  }
 };
 
+// Create admin
 exports.createadmin = async (req, res) => {
   const { email, password, Nom, Prenom, Dateinsc, Adresse, numtel, typeuser } = req.body;
 
   try {
-    const [rows] = await db.execute("SELECT * FROM admin WHERE email = ?", [email]);
+    const [rows] = await db.query("SELECT * FROM admin WHERE email = ?", [email]);
     if (rows.length > 0) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    await db.execute(
+    await db.query(
       "INSERT INTO admin (email, password, Nom, Prenom, Dateinsc, Adresse, numtel, typeuser) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       [email, hashedPassword, Nom, Prenom, Dateinsc, Adresse, numtel, typeuser]
     );
 
     res.status(201).json({ message: "Admin registered successfully" });
   } catch (error) {
-    console.error(error);
+    console.error('Error creating admin:', error);
     res.status(500).json({ message: error.message });
   }
 };
 
+// Admin login
 exports.login = async (req, res) => {
   const { email, password } = req.body;
 
   try {
-    const [rows] = await db.execute("SELECT * FROM admin WHERE email = ?", [email]);
+    const [rows] = await db.query("SELECT * FROM admin WHERE email = ?", [email]);
 
     if (rows.length === 0) {
       return res.status(400).json({ message: "Invalid email or password" });
@@ -131,12 +168,14 @@ exports.login = async (req, res) => {
       }
     });
   } catch (error) {
+    console.error('Error during login:', error);
     res.status(500).json({ message: error.message });
   }
 };
 
+// Authenticate token
 exports.authenticate = (req, res, next) => {
-  const token = req.header("Authorization");
+  const token = req.header("Authorization")?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ message: "Access denied" });
 
   try {
@@ -148,23 +187,37 @@ exports.authenticate = (req, res, next) => {
   }
 };
 
-exports.updateAdmin = (req, res) => {
+// Update admin
+exports.updateAdmin = async (req, res) => {
   const { id } = req.params;
-  const { name, email, phone } = req.body;
-  db.query('UPDATE admin SET name = ?, email = ?, phone = ? WHERE id = ?', [name, email, phone, id], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: "Error updating client", error: err });
+  const { Nom, Prenom, email, Adresse, numtel } = req.body;
+  try {
+    const [result] = await db.query(
+      'UPDATE admin SET Nom = ?, Prenom = ?, email = ?, Adresse = ?, numtel = ? WHERE id = ?',
+      [Nom, Prenom, email, Adresse, numtel, id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Admin not found" });
     }
-    res.status(200).json({ message: "Client updated" });
-  });
+    const [updatedAdmin] = await db.query('SELECT * FROM admin WHERE id = ?', [id]);
+    res.status(200).json(updatedAdmin[0]);
+  } catch (err) {
+    console.error('Error updating admin:', err);
+    res.status(500).json({ message: "Error updating admin", error: err.message });
+  }
 };
 
-exports.deleteAdmin = (req, res) => {
+// Delete admin
+exports.deleteAdmin = async (req, res) => {
   const { id } = req.params;
-  db.query('DELETE FROM admin WHERE id = ?', [id], (err, result) => {
-    if (err) {
-      return res.status(500).json({ message: "Error deleting client", error: err });
+  try {
+    const [result] = await db.query('DELETE FROM admin WHERE id = ?', [id]);
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: "Admin not found" });
     }
-    res.status(200).json({ message: "Client deleted" });
-  });
+    res.status(200).json({ message: "Admin deleted" });
+  } catch (err) {
+    console.error('Error deleting admin:', err);
+    res.status(500).json({ message: "Error deleting admin", error: err.message });
+  }
 };

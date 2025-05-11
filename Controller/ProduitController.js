@@ -2,26 +2,6 @@ const db = require('../db');
 const fs = require('fs');
 const path = require('path');
 
-const saveBase64Image = (base64String, filename) => {
-  const uploadDir = './Uploads/products';
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
-
-  const matches = base64String.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
-  if (!matches || matches.length !== 3) {
-    throw new Error('Invalid base64 string');
-  }
-
-  const imageBuffer = Buffer.from(matches[2], 'base64');
-  const fileExtension = matches[1].split('/')[1] === 'jpeg' ? 'jpg' : matches[1].split('/')[1];
-  const uniqueFilename = `${Date.now()}-${filename || 'product'}.${fileExtension}`;
-  const filePath = path.join(uploadDir, uniqueFilename);
-
-  fs.writeFileSync(filePath, imageBuffer);
-  return `/Uploads/products/${uniqueFilename}`;
-};
-
 exports.getAllProduits = async (req, res) => {
   try {
     const [results] = await db.query('SELECT * FROM produit');
@@ -32,6 +12,45 @@ exports.getAllProduits = async (req, res) => {
   }
 };
 
+exports.getAllProduitsbyfourn = async (req, res) => {
+  const idFournisseur = req.params.idFournisseur;
+  const page = parseInt(req.query.page) || 1; // Default to page 1 if not specified
+  const limit = parseInt(req.query.limit) || 10; // Default to 10 items per page
+  const offset = (page - 1) * limit;
+
+  try {
+    // Get total number of products for this fournisseur
+    const [totalCountResult] = await db.query(
+      'SELECT COUNT(*) as total FROM produit WHERE fournisseur = ?',
+      [idFournisseur]
+    );
+    const totalProducts = totalCountResult[0].total;
+    const totalPages = Math.ceil(totalProducts / limit);
+
+    // Fetch paginated products
+    const [results] = await db.query(
+      'SELECT * FROM produit WHERE fournisseur = ? LIMIT ? OFFSET ?',
+      [idFournisseur, limit, offset]
+    );
+
+    res.status(200).json({
+      products: results,
+      pagination: {
+        currentPage: page,
+        totalPages: totalPages,
+        totalProducts: totalProducts,
+        limit: limit,
+      },
+    });
+  } catch (err) {
+    console.error('Error retrieving produits:', err);
+    res.status(500).json({
+      message: 'Error retrieving produits',
+      error: err,
+    });
+  }
+};
+
 exports.getProduitById = async (req, res) => {
   const { id } = req.params;
   try {
@@ -39,7 +58,10 @@ exports.getProduitById = async (req, res) => {
     if (rows.length === 0) {
       return res.status(404).json({ message: 'Produit not found' });
     }
-    res.status(200).json(rows[0]);
+
+    const [ratings] = await db.query('SELECT * FROM ratings WHERE produit_id = ?', [id]);
+
+    res.status(200).json({ ...rows[0], ratings });
   } catch (err) {
     console.error('Error retrieving produit:', err);
     res.status(500).json({ message: 'Error retrieving produit', error: err });
@@ -50,11 +72,13 @@ exports.createProduit = async (req, res) => {
   const { Nom, categorie, prix, description, photo, fournisseur, stock } = req.body;
 
   if (!Nom || !categorie || !prix || !fournisseur) {
-    return res.status(400).json({ message: 'All required fields must be provided' });
+    return res.status(400).json({
+      message: 'All required fields must be provided',
+    });
   }
 
   try {
-    const photoPath = photo ? saveBase64Image(photo, Nom) : null;
+    const photoPath = photo ? photo : null;
 
     const [result] = await db.execute(
       'INSERT INTO produit (Nom, categorie, prix, description, photo, fournisseur, stock, rating) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -78,10 +102,10 @@ exports.updateProduit = async (req, res) => {
       return res.status(404).json({ message: 'Produit not found' });
     }
 
-    const photoPath = photo ? saveBase64Image(photo, Nom || existing[0].Nom) : existing[0].photo;
+    const photoPath = photo ? photo : existing[0].photo;
 
     const [result] = await db.execute(
-      'UPDATE produit SET Nom = ?, categorie = ?, prix = ?, description = ?, photo = ?, stock = ? WHERE id = ?',
+      'UPDATE produit SET Nom = ?, categorie = ?, prix = ?, description = ?, photo = ?, stock = ? WHERE id = ? ',
       [
         Nom || existing[0].Nom,
         categorie || existing[0].categorie,
@@ -148,5 +172,53 @@ exports.getStatistics = async (req, res) => {
   } catch (err) {
     console.error('Error retrieving statistics:', err);
     res.status(500).json({ message: 'Error retrieving statistics', error: err });
+  }
+};
+
+exports.rateProduit = async (req, res) => {
+  const { id } = req.params;
+  const { client_id, rating } = req.body;
+
+  if (!client_id || !rating || rating < 0 || rating > 5) {
+    return res.status(400).json({ message: 'Client ID and rating (0-5) are required' });
+  }
+
+  try {
+    const [product] = await db.query('SELECT * FROM produit WHERE id = ?', [id]);
+    if (product.length === 0) {
+      return res.status(404).json({ message: 'Product not found' });
+    }
+
+    const [existingRating] = await db.query(
+      'SELECT * FROM ratings WHERE produit_id = ? AND client_id = ?',
+      [id, client_id]
+    );
+
+    if (existingRating.length > 0) {
+      return res.status(400).json({ message: 'Vous avez déjà noté ce produit' });
+    }
+
+    await db.execute(
+      'INSERT INTO ratings (produit_id, client_id, rating) VALUES (?, ?, ?)',
+      [id, client_id, rating]
+    );
+
+    const [ratings] = await db.query(
+      'SELECT AVG(rating) as avg_rating FROM ratings WHERE produit_id = ?',
+      [id]
+    );
+
+    let avgRating = ratings[0].avg_rating;
+    avgRating = avgRating != null ? Number(avgRating) : 0;
+
+    await db.execute(
+      'UPDATE produit SET rating = ? WHERE id = ?',
+      [avgRating.toFixed(1), id]
+    );
+
+    res.status(201).json({ message: 'Rating submitted successfully', avgRating });
+  } catch (err) {
+    console.error('Error submitting rating:', err);
+    res.status(500).json({ message: 'Error submitting rating', error: err });
   }
 };

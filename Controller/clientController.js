@@ -204,21 +204,31 @@ exports.login = async (req, res) => {
       { expiresIn: "1h" }
     );
 
+    // Préparer les infos utilisateur pour la réponse
+    const userResponse = {
+      id: user.id,
+      email: user.email,
+      Nom: user.Nom,
+      Prenom: user.Prenom,
+      Adresse: user.Adresse,
+      numtel: user.numtel,
+      photo: user.photo,
+      dateNaissance: user.dateNaissance,
+      genre: user.genre,
+      typeuser
+    };
+
+    // Ajouter les champs spécifiques pour un fournisseur
+    if (typeuser === "fournisseur") {
+      userResponse.matricule = user.matricule;
+      userResponse.emailPro = user.emailPro;
+      userResponse.entreprise = user.Entreprise;
+    }
+
     // Retour des infos utilisateur
     res.status(200).json({
       token,
-      user: {
-        id: user.id,
-        email: user.email,
-        Nom: user.Nom,
-        Prenom: user.Prenom,
-        Adresse: user.Adresse,
-        numtel: user.numtel,
-        photo: user.photo,
-        dateNaissance: user.dateNaissance,
-        genre: user.genre,
-        typeuser
-      }
+      user: userResponse
     });
 
   } catch (error) {
